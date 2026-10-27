@@ -1,0 +1,16 @@
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import {parseSwap,candles,movingAverage} from '../dist/market.js';
+const pack=a=>'0x'+a.map(v=>BigInt(v).toString(16).padStart(64,'0')).join('');
+const base={decimals:8},quote={decimals:6};
+const log=(a,when='2026-10-24T07:51:27Z',index=0)=>({data:pack(a),block_timestamp:when,block_number:10,transaction_hash:'0xabc',index});
+const sell=parseSwap(log([0,2500000000000,317214230,0]),base,quote,false);
+assert.equal(sell.buy,false);assert.equal(sell.amount,25000);assert.equal(sell.value,317.21423);assert.equal(sell.price,317.21423/25000);
+const buy=parseSwap(log([36006245,0,0,296800403150]),base,quote,false);assert.equal(buy.buy,true);assert.equal(buy.amount,2968.0040315);assert.equal(buy.value,36.006245);
+assert.equal(parseSwap(log([1,1,1,1]),base,quote,false),null);
+const inverted=parseSwap(log([296800403150,0,0,36006245]),base,quote,true);assert.equal(inverted.price,buy.price);assert.equal(inverted.buy,false);
+const trades=[{time:0,price:2,amount:10,value:20,block:1,index:0},{time:30,price:4,amount:1,value:4,block:1,index:1},{time:180,price:3,amount:2,value:6,block:2,index:0}];
+const cs=candles(trades,60);assert.equal(cs.length,4);assert.deepEqual([cs[0].open,cs[0].high,cs[0].low,cs[0].close,cs[0].volume,cs[0].value],[2,4,2,4,11,24]);assert.equal(cs[1].count,0);assert.equal(cs[1].close,4);assert.equal(cs[1].volume,0);assert.equal(cs[3].close,3);
+const daily=candles([{...trades[0],time:Date.parse('2026-10-24T15:59:59Z')/1000},{...trades[1],time:Date.parse('2026-10-24T16:00:00Z')/1000}],86400);assert.equal(daily.length,2);assert.equal(new Date(daily[1].time*1000).toISOString(),'2026-10-24T16:00:00.000Z');
+assert.deepEqual(movingAverage([{close:2},{close:4},{close:6}],2),[null,3,5]);
+const seed=JSON.parse(readFileSync(new URL('../dist/seed.json',import.meta.url)));const actual=seed.items.map(x=>parseSwap(x,base,quote,false)).filter(Boolean);assert.equal(actual.length,seed.items.length);assert.ok(actual.every(t=>t.price>.001&&t.price<.1));const cb=candles(actual,900);assert.equal(cb.reduce((s,c)=>s+c.count,0),actual.length);assert.ok(Math.abs(cb.reduce((s,c)=>s+c.volume,0)-actual.reduce((s,t)=>s+t.amount,0))<.00001);console.log('PASS: swap directions and decimals; OHLC and volume; zero-volume gaps; UTC+8 daily boundary; MA; real-data conservation ('+actual.length+' swaps).');
