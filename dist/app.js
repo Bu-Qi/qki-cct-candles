@@ -1,10 +1,11 @@
 import {SWAP,parseSwap,candles,movingAverage,compatiblePeriod} from './market.js';
 import {COMMON_TOKENS,QUOTES,findCommonToken,availableQuotes,commonMarket} from './common-tokens.js';
+import {RPC_ENDPOINTS,RpcPool,normalizeRpcURL} from './rpc-pool.js';
 const $=id=>document.getElementById(id),API='https://api1.qkiscan.io',CCT='0xe8377ecb0f32f0c16025d5cf360d6c9e2ea66adf',USDT='0xdf0e293cc3c7ba051763ff6b026da0853d446e38',FACTORY='0x4cb5b19e8316743519072170886355b0e2c717cf',DEFAULT_POOL='0x10985efd0765636fc9b40185e721e9bbc1275c3d';
 const known=QUOTES;
-let base={...findCommonToken(CCT)},quote={...known.USDT},pool=DEFAULT_POOL,baseIs0=false,raw=[],trades=[],bars=[],cursor=null,period=900,generation=0,busy=false,isSnapshot=false,lastSync=null,rpcURL='https://hz.rpc.qkiscan.cn',lineMode=false,maEnabled=new Set([5,10,20]);
+let base={...findCommonToken(CCT)},quote={...known.USDT},pool=DEFAULT_POOL,baseIs0=false,raw=[],trades=[],bars=[],cursor=null,period=900,generation=0,busy=false,isSnapshot=false,lastSync=null,lineMode=false,maEnabled=new Set([5,10,20]);
 let marketError=false;let visible=120,end=0,hover=null,drag=null,ma={};const chart=$('chart'),ctx=chart.getContext('2d');let W=0,H=0,plot={};
-try{rpcURL=localStorage.getItem('qki-chart-rpc')||rpcURL;$('rpc').value=rpcURL}catch{}
+const rpcClient=new RpcPool({onUpdate:renderRpc});
 const address=x=>/^0x[0-9a-f]{40}$/i.test(x),short=x=>x.slice(0,6)+'…'+x.slice(-4),key=x=>x.transaction_hash+':'+x.index;
 const number=(x,d=2)=>Number(x).toLocaleString('en-US',{maximumFractionDigits:d});
 function price(x){if(!Number.isFinite(x))return '—';return x>=100?number(x,3):x>=1?x.toFixed(5):x>=.00001?x.toFixed(8):x.toExponential(4)}
@@ -13,7 +14,43 @@ function time(t){return new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Shanghai
 function notice(s,error=false){$('notice').textContent=s;$('notice').classList.toggle('error',error)}
 function toast(s){$('toast').textContent=s;$('toast').style.display='block';clearTimeout(toast.timer);toast.timer=setTimeout(()=>$('toast').style.display='none',3500)}
 async function json(url,opts={}){const r=await fetch(url,{...opts,signal:AbortSignal.timeout(18000)});if(!r.ok)throw Error(r.status===429?'接口请求频繁，请稍后刷新。':`数据接口返回 ${r.status}`);const d=await r.json();if(d.error)throw Error(d.error.message||String(d.error));return d}
-async function call(to,data){const r=await json(rpcURL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'eth_call',params:[{to,data},'latest']})});if(!/^0x[0-9a-f]+$/i.test(r.result||''))throw Error('RPC 未返回有效合约数据');return r.result}
+async function call(to,data){const result=await rpcClient.request('eth_call',[{to,data},'latest']);if(!/^0x[0-9a-f]+$/i.test(result||''))throw Error('RPC 未返回有效合约数据');return result}
+function renderRpc(state){
+ const complete=state.reports.filter(r=>r.status!=='idle'&&r.status!=='checking').length,active=state.active;
+ let message;
+ if(state.measuring)message=state.mode==='fixed'?'正在验证所选节点，仅执行只读查询…':`正在测速 ${complete}/${RPC_ENDPOINTS.length}，仅测试只读接口…${active?' 当前最快 '+active.url+' · '+active.latencyMs+' ms':''}`;
+ else if(active)message=`${state.mode==='auto'?'自动择优':'固定节点'} · ${active.url} · ${active.latencyMs} ms · 区块 ${active.blockNumber}${state.failovers?' · 已切换 '+state.failovers+' 次':''}`;
+ else message=state.mode==='auto'?'这些 RPC 在当前浏览器暂不可用，可重新测速或设置自定义节点。K 线索引行情仍可加载。':'固定节点不可用，请更换节点或恢复自动择优。';
+ $('rpc-status').textContent=message;$('rpc-status').classList.toggle('unavailable',!state.measuring&&!active);
+ $('rpc-badge').textContent=state.measuring?(state.mode==='fixed'?'RPC 节点验证中':`RPC 测速 ${complete}/${RPC_ENDPOINTS.length}`):active?`RPC ${state.mode==='auto'?'自动':'固定'} · ${active.latencyMs} ms`:'RPC 暂不可用';
+ for(const id of ['rpc-retest','rpc-choice','save-rpc'])$(id).disabled=state.measuring;
+ if(state.mode==='auto')$('rpc-choice').value='auto';
+ else if(active)$('rpc-choice').value=RPC_ENDPOINTS.includes(active.url)?active.url:'custom';
+ const reports=state.measuring?state.reports:[...state.reports].sort((a,b)=>Number(b.selected)-Number(a.selected)||Number(b.ok)-Number(a.ok)||(a.latencyMs??Infinity)-(b.latencyMs??Infinity));
+ const fragment=document.createDocumentFragment();
+ for(const r of reports){
+  const row=document.createElement('tr');if(r.selected)row.className='selected';
+  const status=r.selected?'使用中'+(r.lag>5?` · 落后 ${r.lag} 块`:''):r.status==='checking'?'测速中…':r.status==='idle'?'未测速':r.status==='lagging'?`落后 ${r.lag} 块，已跳过`:r.ok?'可用':r.error||'不可用';
+  for(const value of [r.url.replace(/^https:\/\//,''),r.ok?r.latencyMs+' ms':'—',r.ok?String(r.blockNumber):'—',status]){const cell=document.createElement('td');cell.textContent=value;row.append(cell)}
+  row.lastChild.className=r.status==='lagging'?'rpc-lagging':r.ok?'rpc-ready':r.status==='error'?'rpc-error':'';fragment.append(row);
+ }
+ $('rpc-results').replaceChildren(fragment);
+}
+async function useAutoRpc(inform=false){
+ try{localStorage.setItem('qki-chart-rpc-mode','auto')}catch{}
+ try{const state=await rpcClient.useAutomatic();if(inform&&state.active)toast('已选择最快可用节点：'+state.active.url)}catch(error){if(inform)toast(error.message)}
+}
+async function useFixedRpc(value){
+ try{const url=normalizeRpcURL(value);await rpcClient.useEndpoint(url);$('rpc').value=url;try{localStorage.setItem('qki-chart-rpc-mode','fixed');localStorage.setItem('qki-chart-rpc',url)}catch{}toast('节点已通过 QKI 链与合约读取验证')}
+ catch(error){toast('节点未通过验证：'+error.message)}
+}
+function initRpc(){
+ const custom=$('rpc-choice').querySelector('option[value="custom"]');
+ for(const url of RPC_ENDPOINTS){const option=document.createElement('option');option.value=url;option.textContent=url;$('rpc-choice').insertBefore(option,custom)}
+ let mode='auto',saved='';try{mode=localStorage.getItem('qki-chart-rpc-mode')||'auto';saved=localStorage.getItem('qki-chart-rpc')||''}catch{}
+ $('rpc').value=saved;
+ if(mode==='fixed'&&saved)rpcClient.useEndpoint(saved).catch(()=>{});else useAutoRpc();
+}
 async function tokenInfo(a){const preset=findCommonToken(a);if(preset)return {...preset};const t=await json(`${API}/api/v2/tokens/${a}`);if(t.decimals==null)throw Error('无法读取代币精度');return {address_hash:a.toLowerCase(),symbol:t.symbol||short(a),decimals:Number(t.decimals)}}
 async function loadLogs(p,params){return json(`${API}/api/v2/addresses/${p}/logs?`+new URLSearchParams(params||{topic:SWAP}))}
 function setBusy(b){busy=b;for(const id of ['search','more','refresh','quote'])$(id).disabled=b;document.querySelectorAll('[data-token-id]').forEach(button=>button.disabled=b);}
@@ -98,10 +135,12 @@ $('periods').onclick=e=>{const b=e.target.closest('[data-sec]');if(!b)return;per
 document.querySelectorAll('[data-ma]').forEach(b=>b.onclick=()=>{const n=Number(b.dataset.ma);maEnabled.has(n)?maEnabled.delete(n):maEnabled.add(n);b.classList.toggle('ma-on',maEnabled.has(n));draw()});
 $('chart-type').onclick=()=>{lineMode=!lineMode;$('chart-type').textContent=lineMode?'K线':'折线';draw()};$('reset').onclick=()=>{visible=Math.max(20,bars.length);end=bars.length;hover=null;draw()};
 $('fullscreen').onclick=async()=>{try{if(document.fullscreenElement)await document.exitFullscreen();else await $('chart-panel').requestFullscreen()}catch{toast('当前浏览器不支持全屏，可使用浏览器缩放。')}};
-$('save-rpc').onclick=()=>{try{const u=new URL($('rpc').value.trim());if(u.protocol!=='https:')throw Error('请使用 HTTPS RPC');rpcURL=u.href;try{localStorage.setItem('qki-chart-rpc',rpcURL)}catch{}toast('RPC 已应用，下次查询使用新连接')}catch(e){toast(e.message)}};
+$('save-rpc').onclick=()=>useFixedRpc($('rpc').value);
+$('rpc-retest').onclick=()=>useAutoRpc(true);
+$('rpc-choice').onchange=()=>{const choice=$('rpc-choice').value;if(choice==='auto')useAutoRpc(true);else if(choice==='custom')$('rpc').focus();else useFixedRpc(choice)};
 $('export').onclick=()=>{if(!bars.length){toast('请先加载成交数据');return}const header='time_utc,time_utc8,open,high,low,close,volume_'+base.symbol+',turnover_'+quote.symbol+',swap_count';const csv='\uFEFF'+header+'\r\n'+bars.map(c=>[new Date(c.time*1000).toISOString(),date(c.time,true),c.open,c.high,c.low,c.close,c.volume,c.value,c.count].join(',')).join('\r\n');const u=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'})),a=document.createElement('a');a.href=u;a.download=`${base.symbol}-${quote.symbol}-${period}s.csv`;a.click();setTimeout(()=>URL.revokeObjectURL(u),1000);toast('已导出当前加载范围的 K 线')};
 chart.addEventListener('wheel',e=>{e.preventDefault();visible=Math.max(10,Math.min(bars.length||10,Math.round(visible*(e.deltaY>0?1.18:.84))));draw()},{passive:false});
 chart.addEventListener('pointerdown',e=>{chart.setPointerCapture(e.pointerId);drag={x:e.offsetX,end};hover=null});chart.addEventListener('pointermove',e=>{if(drag){end=Math.max(Math.min(visible,bars.length),Math.min(bars.length,drag.end-Math.round((e.offsetX-drag.x)/(plot.step||1))));hover=null}else hover={x:e.offsetX,y:e.offsetY};draw()});chart.addEventListener('pointerup',()=>drag=null);chart.addEventListener('pointercancel',()=>drag=null);chart.addEventListener('pointerleave',()=>{if(!drag){hover=null;draw()}});
 new ResizeObserver(()=>draw()).observe($('canvas-wrap'));document.addEventListener('fullscreenchange',()=>requestAnimationFrame(draw));
 function clock(){$('clock').textContent=new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(new Date())}clock();setInterval(clock,1000);setInterval(()=>{if(!document.hidden)refresh(true)},30000);
-initCommonTokens();await selectMarket();
+initCommonTokens();initRpc();await selectMarket();

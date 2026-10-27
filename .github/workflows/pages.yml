@@ -22,7 +22,9 @@ jobs:
         with:
           node-version: '22'
       - name: Check market calculations
-        run: node tests/market.mjs
+        run: |
+          node tests/market.mjs
+          node --test tests/rpc-pool.mjs
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

@@ -28,6 +28,7 @@ python -m http.server 8080 --directory dist
 
 ```sh
 node tests/market.mjs
+node --test tests/rpc-pool.mjs
 ```
 
 ## 数据口径
@@ -49,3 +50,26 @@ node tests/market.mjs
 GAS 没有 USDT 直接池，使用 GAS/WQKI。USDT 保留为计价币，不设单独快捷入口。成交稀疏、历史跨度较长时自动使用更大的周期，未产生交易的时段不会增加成交量。
 
 无需连接钱包，不收集私钥。RPC 可在页面底部设置。
+
+
+## RPC 自动测速与切换
+
+默认自动模式在访问者浏览器中并发检测以下 11 个节点，不将某个地址固定当作最快：
+
+- https://116.62.144.117
+- https://118.178.121.168
+- https://101.132.39.198
+- https://8.210.130.36
+- https://139.224.206.117
+- https://rpc1.qkirpc.org
+- https://rpc2.qkirpc.org
+- https://rpc3.qkirpc.org
+- https://rpc1.qkiscan.io
+- https://rpc2.qkiscan.io
+- https://rpc3.qkiscan.io
+
+每个节点使用 `eth_chainId`、`eth_blockNumber` 和 CCT2/USDT 池 `getReserves()` 的 `eth_call` 做三次验证，以平均请求延迟排序；要求链 ID 为 20181205，并排除比已观察到的最高区块落后超过 5 块的节点。单请求超时 3.5 秒，结果在链上查询时最多沿用 2 分钟，过期会重新测速。
+
+在“数据口径与连接设置”中可查看各节点延迟、高度及不可用原因，重新测速、固定选择某个节点或输入自定义 HTTPS RPC。自动模式遇到网络失败、超时或无效响应会切换到合格备用节点；合约本身的 revert 会直接显示，不通过切换节点掩盖。固定模式只使用所选节点。只允许只读 RPC，不发送交易。
+
+节点可用性取决于访问者网络、HTTPS 证书和节点跨域配置。无法连接时不会产生虚假的测速结果，也不会关闭证书校验。RPC 用于查找和验证交易池；历史 K 线仍从区块浏览器索引加载，RPC 测速并不能代表历史数据接口的加载速度。测速与索引行情独立，三个预设代币的图表无需等待 RPC 测速完成。
