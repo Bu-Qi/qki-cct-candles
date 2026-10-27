@@ -136,6 +136,8 @@ document.querySelectorAll('[data-ma]').forEach(b=>b.onclick=()=>{const n=Number(
 $('chart-type').onclick=()=>{lineMode=!lineMode;$('chart-type').textContent=lineMode?'K线':'折线';draw()};$('reset').onclick=()=>{visible=Math.max(20,bars.length);end=bars.length;hover=null;draw()};
 $('fullscreen').onclick=async()=>{try{if(document.fullscreenElement)await document.exitFullscreen();else await $('chart-panel').requestFullscreen()}catch{toast('当前浏览器不支持全屏，可使用浏览器缩放。')}};
 $('save-rpc').onclick=()=>useFixedRpc($('rpc').value);
+$('qq-join').addEventListener('click',()=>toast('若未打开 QQ，请复制群号 718614283，在 QQ 中搜索「夸克新手村」加群。'));
+$('qq-copy').onclick=async()=>{try{await navigator.clipboard.writeText('718614283');toast('群号 718614283 已复制，可在 QQ 中搜索加群。')}catch{toast('复制未成功，请选中群号 718614283 手动复制。')}};
 $('rpc-retest').onclick=()=>useAutoRpc(true);
 $('rpc-choice').onchange=()=>{const choice=$('rpc-choice').value;if(choice==='auto')useAutoRpc(true);else if(choice==='custom')$('rpc').focus();else useFixedRpc(choice)};
 $('export').onclick=()=>{if(!bars.length){toast('请先加载成交数据');return}const header='time_utc,time_utc8,open,high,low,close,volume_'+base.symbol+',turnover_'+quote.symbol+',swap_count';const csv='\uFEFF'+header+'\r\n'+bars.map(c=>[new Date(c.time*1000).toISOString(),date(c.time,true),c.open,c.high,c.low,c.close,c.volume,c.value,c.count].join(',')).join('\r\n');const u=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'})),a=document.createElement('a');a.href=u;a.download=`${base.symbol}-${quote.symbol}-${period}s.csv`;a.click();setTimeout(()=>URL.revokeObjectURL(u),1000);toast('已导出当前加载范围的 K 线')};
