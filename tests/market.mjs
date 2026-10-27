@@ -14,3 +14,18 @@ const cs=candles(trades,60);assert.equal(cs.length,4);assert.deepEqual([cs[0].op
 const daily=candles([{...trades[0],time:Date.parse('2026-10-24T15:59:59Z')/1000},{...trades[1],time:Date.parse('2026-10-24T16:00:00Z')/1000}],86400);assert.equal(daily.length,2);assert.equal(new Date(daily[1].time*1000).toISOString(),'2026-10-24T16:00:00.000Z');
 assert.deepEqual(movingAverage([{close:2},{close:4},{close:6}],2),[null,3,5]);
 const seed=JSON.parse(readFileSync(new URL('../dist/seed.json',import.meta.url)));const actual=seed.items.map(x=>parseSwap(x,base,quote,false)).filter(Boolean);assert.equal(actual.length,seed.items.length);assert.ok(actual.every(t=>t.price>.001&&t.price<.1));const cb=candles(actual,900);assert.equal(cb.reduce((s,c)=>s+c.count,0),actual.length);assert.ok(Math.abs(cb.reduce((s,c)=>s+c.volume,0)-actual.reduce((s,t)=>s+t.amount,0))<.00001);console.log('PASS: swap directions and decimals; OHLC and volume; zero-volume gaps; UTC+8 daily boundary; MA; real-data conservation ('+actual.length+' swaps).');
+
+// Known pairs must preserve pricing and direction across 6-, 8- and 18-decimal tokens.
+const {COMMON_TOKENS,QUOTES,findCommonToken,availableQuotes,commonMarket}=await import('../dist/common-tokens.js');
+const {compatiblePeriod}=await import('../dist/market.js');
+const fixtures=JSON.parse(readFileSync(new URL('./fixtures/common-swaps.json',import.meta.url)));
+assert.equal(fixtures.length,3);
+for(const f of fixtures){const token=COMMON_TOKENS.find(t=>t.id===f.tokenId),market=commonMarket(token.address_hash,f.quote);assert.equal(market.pool,f.pool);assert.equal(market.usedFallback,false);const trade=parseSwap(f.log,market.token,market.quote,market.baseIs0);assert.ok(trade,f.tokenId+' must produce a candle');assert.equal(trade.buy,f.expected.buy);for(const field of ['amount','value','price'])assert.ok(Math.abs(trade[field]-Number(f.expected[field]))/Number(f.expected[field])<1e-12,`${f.tokenId}: ${field} has wrong units`);}
+const w=COMMON_TOKENS.find(t=>t.id==='WQKI'),u=QUOTES.USDT;
+const swap=fixtures.find(f=>f.tokenId==='WQKI').log;const direct=parseSwap(swap,w,QUOTES.USDT,true),inverse=parseSwap(swap,u,QUOTES.QKI,false);assert.ok(Math.abs(direct.price*inverse.price-1)<1e-12);assert.equal(direct.buy,!inverse.buy);assert.equal(direct.amount,inverse.value);
+const gas=COMMON_TOKENS.find(t=>t.id==='GAS');assert.deepEqual(availableQuotes(gas.address_hash),['QKI']);assert.equal(commonMarket(gas.address_hash,'USDT').quoteId,'QKI');assert.equal(commonMarket(gas.address_hash,'USDT').usedFallback,true);
+assert.equal(commonMarket(w.address_hash,'QKI').quoteId,'USDT');
+assert.equal(findCommonToken('0xE8377eCb0F32f0C16025d5cF360D6C9e2EA66Adf').symbol,'CCT2');assert.equal(commonMarket('0x1111111111111111111111111111111111111111','USDT'),null);
+const yearAgo=Date.parse('2025-11-05T02:17:57Z')/1000,latest=Date.parse('2026-10-21T19:23:52Z')/1000;assert.equal(compatiblePeriod(yearAgo,latest,900),86400);assert.equal(compatiblePeriod(0,24*3600,900),900);
+assert.doesNotThrow(()=>candles([{time:yearAgo,price:1,amount:1,value:1,block:1,index:0},{time:latest,price:2,amount:1,value:2,block:2,index:0}],compatiblePeriod(yearAgo,latest,900)));
+console.log('PASS: three real token/pair fixtures; inverse WQKI/USDT prices; unsupported/self quote fallback; CCT2 address resolution; sparse history period selection.');

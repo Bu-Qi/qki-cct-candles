@@ -1,7 +1,8 @@
-import {SWAP,parseSwap,candles,movingAverage} from './market.js';
+import {SWAP,parseSwap,candles,movingAverage,compatiblePeriod} from './market.js';
+import {COMMON_TOKENS,QUOTES,findCommonToken,availableQuotes,commonMarket} from './common-tokens.js';
 const $=id=>document.getElementById(id),API='https://api1.qkiscan.io',CCT='0xe8377ecb0f32f0c16025d5cf360d6c9e2ea66adf',USDT='0xdf0e293cc3c7ba051763ff6b026da0853d446e38',FACTORY='0x4cb5b19e8316743519072170886355b0e2c717cf',DEFAULT_POOL='0x10985efd0765636fc9b40185e721e9bbc1275c3d';
-const known={USDT:{address_hash:USDT,symbol:'USDT',decimals:6},QKI:{address_hash:'',symbol:'QKI',decimals:18}};
-let base={address_hash:CCT,symbol:'CCT',decimals:8},quote=known.USDT,pool=DEFAULT_POOL,baseIs0=false,raw=[],trades=[],bars=[],cursor=null,period=900,generation=0,busy=false,isSnapshot=false,lastSync=null,rpcURL='https://hz.rpc.qkiscan.cn',lineMode=false,maEnabled=new Set([5,10,20]);
+const known=QUOTES;
+let base={...findCommonToken(CCT)},quote={...known.USDT},pool=DEFAULT_POOL,baseIs0=false,raw=[],trades=[],bars=[],cursor=null,period=900,generation=0,busy=false,isSnapshot=false,lastSync=null,rpcURL='https://hz.rpc.qkiscan.cn',lineMode=false,maEnabled=new Set([5,10,20]);
 let marketError=false;let visible=120,end=0,hover=null,drag=null,ma={};const chart=$('chart'),ctx=chart.getContext('2d');let W=0,H=0,plot={};
 try{rpcURL=localStorage.getItem('qki-chart-rpc')||rpcURL;$('rpc').value=rpcURL}catch{}
 const address=x=>/^0x[0-9a-f]{40}$/i.test(x),short=x=>x.slice(0,6)+'…'+x.slice(-4),key=x=>x.transaction_hash+':'+x.index;
@@ -13,19 +14,32 @@ function notice(s,error=false){$('notice').textContent=s;$('notice').classList.t
 function toast(s){$('toast').textContent=s;$('toast').style.display='block';clearTimeout(toast.timer);toast.timer=setTimeout(()=>$('toast').style.display='none',3500)}
 async function json(url,opts={}){const r=await fetch(url,{...opts,signal:AbortSignal.timeout(18000)});if(!r.ok)throw Error(r.status===429?'接口请求频繁，请稍后刷新。':`数据接口返回 ${r.status}`);const d=await r.json();if(d.error)throw Error(d.error.message||String(d.error));return d}
 async function call(to,data){const r=await json(rpcURL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'eth_call',params:[{to,data},'latest']})});if(!/^0x[0-9a-f]+$/i.test(r.result||''))throw Error('RPC 未返回有效合约数据');return r.result}
-async function tokenInfo(a){const t=await json(`${API}/api/v2/tokens/${a}`);if(t.decimals==null)throw Error('无法读取代币精度');return {address_hash:a.toLowerCase(),symbol:t.symbol||short(a),decimals:Number(t.decimals)}}
+async function tokenInfo(a){const preset=findCommonToken(a);if(preset)return {...preset};const t=await json(`${API}/api/v2/tokens/${a}`);if(t.decimals==null)throw Error('无法读取代币精度');return {address_hash:a.toLowerCase(),symbol:t.symbol||short(a),decimals:Number(t.decimals)}}
 async function loadLogs(p,params){return json(`${API}/api/v2/addresses/${p}/logs?`+new URLSearchParams(params||{topic:SWAP}))}
-function setBusy(b){busy=b;for(const id of ['search','more','refresh','preset-usdt','preset-qki'])$(id).disabled=b;}
+function setBusy(b){busy=b;for(const id of ['search','more','refresh','quote'])$(id).disabled=b;document.querySelectorAll('[data-token-id]').forEach(button=>button.disabled=b);}
+function initCommonTokens(){
+ const fragment=document.createDocumentFragment();
+ for(const token of COMMON_TOKENS){
+  const button=document.createElement('button');button.className='token-chip';button.type='button';button.dataset.tokenId=token.id;button.style.setProperty('--token-color',token.color);button.setAttribute('aria-label',`查看 ${token.id} / ${token.defaultQuote} K 线`);button.setAttribute('aria-pressed','false');button.title=`${token.name}\n${token.address_hash}`;
+  const icon=document.createElement('span');icon.className='token-mark';icon.textContent=token.id==='USDT'?'₮':token.id==='WQKI'?'Q':token.id.charAt(0);
+  const label=document.createElement('span');label.className='token-chip-label';const name=document.createElement('strong');name.textContent=token.id;const pair=document.createElement('small');pair.textContent=`/ ${token.defaultQuote}`;label.append(name,pair);
+  const arrow=document.createElement('span');arrow.className='token-arrow';arrow.textContent='↗';button.append(icon,label,arrow);
+  button.onclick=()=>{if(busy)return;$('token').value=token.address_hash;$('quote').value=token.defaultQuote;$('manual-pool').value='';selectMarket()};fragment.append(button);
+ }
+ $('common-tokens').replaceChildren(fragment);
+}
 function saveCache(){try{localStorage.setItem('qki-chart:'+pool,JSON.stringify({items:raw.slice(0,6000),next:cursor,fetchedAt:Date.now()/1000}))}catch{}}
 function compact(x){return {data:x.data,block_timestamp:x.block_timestamp,block_number:x.block_number,transaction_hash:x.transaction_hash,index:x.index}}
 function merge(items){const all=new Map(raw.map(x=>[key(x),x]));for(const x of items)if(x.topics?.[0]===SWAP||(!x.topics&&x.data?.length===258))all.set(key(x),compact(x));raw=[...all.values()].sort((a,b)=>b.block_number-a.block_number||b.index-a.index)}
 function updateHeader(){
  $('pair-name').replaceChildren(document.createTextNode(base.symbol+' '));const sp=document.createElement('span');sp.textContent='/ '+quote.symbol;$('pair-name').append(sp);$('coin-icon').textContent=base.symbol.slice(0,1);$('pool-link').href=`https://scan.qki.dev/address/${pool}`;$('pool-link').textContent='流动池 '+short(pool)+' ↗';$('price-unit').textContent=quote.symbol;$('volume-unit').textContent=quote.symbol;$('trade-unit').textContent='价格 / '+quote.symbol;$('trade-amount').textContent='数量 / '+base.symbol;
- for(const [id,q] of [['preset-usdt','USDT'],['preset-qki','QKI']])$(id).classList.toggle('active',base.address_hash===CCT&&quote.symbol===q);
+ for(const button of document.querySelectorAll('[data-token-id]')){const token=COMMON_TOKENS.find(t=>t.id===button.dataset.tokenId),active=token.address_hash===base.address_hash;button.classList.toggle('active',active);button.setAttribute('aria-pressed',String(active))}
+ for(const option of $('quote').options)option.disabled=!availableQuotes(base.address_hash).includes(option.value);
 }
 function render(reset=false){
  trades=raw.map(x=>parseSwap(x,base,quote,baseIs0)).filter(Boolean).sort((a,b)=>b.time-a.time||b.block-a.block||b.index-a.index);
  updateHeader();
+ if(trades.length){const next=compatiblePeriod(trades.at(-1).time,trades[0].time,period);if(next!==period){period=next;for(const button of $('periods').children)button.classList.toggle('selected',Number(button.dataset.sec)===period);toast('该代币历史跨度较长，已自动使用更大的 K 线周期')}}
  try{bars=candles(trades,period)}catch(e){notice(e.message,true);bars=[]}
  ma=Object.fromEntries([5,10,20].map(n=>[n,movingAverage(bars,n)]));
  if(reset){visible=Math.min(120,Math.max(20,bars.length));end=bars.length} else end=Math.min(bars.length,Math.max(1,end));
@@ -47,9 +61,9 @@ async function refresh(quiet=false){
 async function loadMore(){if(busy||!cursor)return;const gen=generation;setBusy(true);notice('正在加载更早的链上成交…');try{let added=0;for(let i=0;i<4&&cursor;i++){const d=await loadLogs(pool,cursor);if(gen!==generation)return;merge(d.items);cursor=d.next_page_params;added+=d.items.length;render(true)}saveCache();notice(`已加载 ${number(trades.length,0)} 笔成交。${cursor?'可继续向前加载。':'已到达该池可用历史起点。'}`)}catch(e){notice('历史加载中断，已保留成功获取的成交。'+e.message,true)}finally{if(gen===generation){setBusy(false);$('more').disabled=!cursor}}}
 async function selectMarket(){if(busy)return;const a=$('token').value.trim().toLowerCase(),q=$('quote').value,manual=$('manual-pool').value.trim().toLowerCase();if(!address(a)){notice('请输入有效的 0x 开头、40 位十六进制代币合约地址。',true);return}if(manual&&!address(manual)){notice('手动流动池地址格式不正确。',true);return}
  marketError=false;setBusy(true);notice('正在查找交易对并核对代币信息…');const gen=++generation;
- try{let b,qt,p;
-  if(a===CCT&&q==='USDT'&&!manual){b={address_hash:CCT,symbol:'CCT',decimals:8};qt=known.USDT;p=DEFAULT_POOL}
-  else{b=await tokenInfo(a);qt={...known[q]};if(q==='QKI'){const w=await call('0x3c91FD5247B050A1536F24D012a17a618EEFbfCA','0xc5a88e4e');qt.address_hash='0x'+w.slice(-40).toLowerCase()}
+ try{let b,qt,p;const preset=manual?null:commonMarket(a,q);
+  if(preset){b=preset.token;qt=preset.quote;p=preset.pool;$('quote').value=preset.quoteId;if(preset.usedFallback)toast(`${b.symbol} 暂无 ${q} 直接池，已使用 ${preset.quoteId} 计价`)}
+  else{b=await tokenInfo(a);qt={...known[q]};
    if(a===qt.address_hash)throw Error('代币与计价币不能相同');p=manual||('0x'+(await call(FACTORY,'0xe6a43905'+a.slice(2).padStart(64,'0')+qt.address_hash.slice(2).padStart(64,'0'))).slice(-40).toLowerCase());if(/^0x0{40}$/.test(p))throw Error(`未找到 ${b.symbol}/${qt.symbol} 的直接交易池，请更换计价币。`);
    const [t0,t1]=await Promise.all([call(p,'0x0dfe1681'),call(p,'0xd21220a7')]);const pairTokens=[t0,t1].map(t=>'0x'+t.slice(-40).toLowerCase());if(!pairTokens.includes(a)||!pairTokens.includes(qt.address_hash))throw Error('该流动池的两个代币与所选合约、计价币不匹配');
   }
@@ -79,7 +93,7 @@ function draw(){
  if(hover&&hover.x>=left&&hover.x<W-right&&hover.y>top&&hover.y<bottom){const ix=Math.max(s,Math.min(e-1,s+Math.floor((hover.x-left)/step))),xx=x(ix);ctx.strokeStyle='#7891a288';ctx.setLineDash([3,4]);ctx.beginPath();ctx.moveTo(xx,top);ctx.lineTo(xx,bottom);ctx.moveTo(left,hover.y);ctx.lineTo(W-right,hover.y);ctx.stroke();ctx.setLineDash([]);ctx.fillStyle='#263b4c';const tw=Math.min(150,W-20),tx=Math.max(5,Math.min(W-tw-5,xx-tw/2));ctx.fillRect(tx,H-24,tw,23);ctx.fillStyle='#d3e1eb';ctx.textAlign='center';ctx.fillText(date(bars[ix].time),tx+tw/2,H-12);ctx.textAlign='left';legend(ix)}else legend(e-1);
 }
 $('search').onclick=selectMarket;$('token').addEventListener('keydown',e=>{if(e.key==='Enter')selectMarket()});$('refresh').onclick=()=>refresh();$('more').onclick=loadMore;
-for(const [id,q] of [['preset-usdt','USDT'],['preset-qki','QKI']])$(id).onclick=()=>{$('token').value=CCT;$('quote').value=q;$('manual-pool').value='';selectMarket()};
+$('quote').addEventListener('change',()=>{if(!busy)selectMarket()});
 $('periods').onclick=e=>{const b=e.target.closest('[data-sec]');if(!b)return;period=Number(b.dataset.sec);for(const x of $('periods').children)x.classList.toggle('selected',x===b);render(true)};
 document.querySelectorAll('[data-ma]').forEach(b=>b.onclick=()=>{const n=Number(b.dataset.ma);maEnabled.has(n)?maEnabled.delete(n):maEnabled.add(n);b.classList.toggle('ma-on',maEnabled.has(n));draw()});
 $('chart-type').onclick=()=>{lineMode=!lineMode;$('chart-type').textContent=lineMode?'K线':'折线';draw()};$('reset').onclick=()=>{visible=Math.max(20,bars.length);end=bars.length;hover=null;draw()};
@@ -90,4 +104,4 @@ chart.addEventListener('wheel',e=>{e.preventDefault();visible=Math.max(10,Math.m
 chart.addEventListener('pointerdown',e=>{chart.setPointerCapture(e.pointerId);drag={x:e.offsetX,end};hover=null});chart.addEventListener('pointermove',e=>{if(drag){end=Math.max(Math.min(visible,bars.length),Math.min(bars.length,drag.end-Math.round((e.offsetX-drag.x)/(plot.step||1))));hover=null}else hover={x:e.offsetX,y:e.offsetY};draw()});chart.addEventListener('pointerup',()=>drag=null);chart.addEventListener('pointercancel',()=>drag=null);chart.addEventListener('pointerleave',()=>{if(!drag){hover=null;draw()}});
 new ResizeObserver(()=>draw()).observe($('canvas-wrap'));document.addEventListener('fullscreenchange',()=>requestAnimationFrame(draw));
 function clock(){$('clock').textContent=new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(new Date())}clock();setInterval(clock,1000);setInterval(()=>{if(!document.hidden)refresh(true)},30000);
-await selectMarket();
+initCommonTokens();await selectMarket();

@@ -1,4 +1,9 @@
 export const SWAP='0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822';
+export function compatiblePeriod(firstTime,lastTime,requested){
+ const span=Math.max(0,lastTime-firstTime);
+ if(span/requested<=29998)return requested;
+ return [60,300,900,3600,14400,86400].find(p=>span/p<=1200)||86400;
+}
 export function parseSwap(log,base,quote,baseIs0){
  if(!/^0x[0-9a-f]{256}$/i.test(log.data||''))return null;
  const raw=log.data.slice(2).match(/.{64}/g).map(x=>BigInt('0x'+x));
